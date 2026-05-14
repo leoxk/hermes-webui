@@ -3539,19 +3539,16 @@ function _stripForTTS(text){
 }
 
 let _ttsSpeaking=false;
-let _ttsCurrentUtterance=null;
+let _ttsCurrentAudio=null;
+let _ttsAbortController=null;
 
 function speakMessage(btn){
-  if(!('speechSynthesis' in window)){
-    showToast(t('tts_not_supported')||'Speech synthesis not supported in this browser.');
-    return;
-  }
   // If already speaking this message, stop
   if(btn&&btn.dataset.speaking==='1'){
     stopTTS();
     return;
   }
-  // Stop any current speech
+  // Stop any current playback
   stopTTS();
 
   const row=btn?btn.closest('[data-raw-text]'):null;
@@ -3561,44 +3558,77 @@ function speakMessage(btn){
   const clean=_stripForTTS(text);
   if(!clean) return;
 
-  const utter=new SpeechSynthesisUtterance(clean);
+  // Create abort controller for this request
+  _ttsAbortController=new AbortController();
+  const abortSignal=_ttsAbortController.signal;
 
-  // Apply saved voice preference
-  const savedVoice=localStorage.getItem('hermes-tts-voice');
-  const voices=speechSynthesis.getVoices();
-  if(savedVoice&&voices.length){
-    const match=voices.find(v=>v.name===savedVoice);
-    if(match) utter.voice=match;
-  }
-
-  // Apply saved rate/pitch
-  const savedRate=parseFloat(localStorage.getItem('hermes-tts-rate'));
-  if(!isNaN(savedRate)) utter.rate= Math.min(2,Math.max(0.5,savedRate));
-  const savedPitch=parseFloat(localStorage.getItem('hermes-tts-pitch'));
-  if(!isNaN(savedPitch)) utter.pitch=Math.min(2,Math.max(0,savedPitch));
-
-  _ttsCurrentUtterance=utter;
+  const btnRef=btn;
+  if(btnRef) btnRef.dataset.speaking='1';
   _ttsSpeaking=true;
-  if(btn) btn.dataset.speaking='1';
 
-  utter.onend=()=>{ _ttsSpeaking=false; _ttsCurrentUtterance=null; if(btn) btn.dataset.speaking='0'; };
-  utter.onerror=()=>{ _ttsSpeaking=false; _ttsCurrentUtterance=null; if(btn) btn.dataset.speaking='0'; };
+  fetch('/api/tts',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({text:clean}),
+    signal:abortSignal,
+  })
+  .then(function(res){ return res.json(); })
+  .then(function(data){
+    if(!data.success){
+      showToast(data.error||'TTS failed');
+      stopTTS();
+      return;
+    }
+    // Decode base64 to binary
+    var binaryStr=atob(data.audio_base64);
+    var bytes=new Uint8Array(binaryStr.length);
+    for(var i=0;i<binaryStr.length;i++){ bytes[i]=binaryStr.charCodeAt(i); }
+    var blob=new Blob([bytes],{type:data.mime_type||'audio/mpeg'});
+    var url=URL.createObjectURL(blob);
+    var audio=new Audio(url);
+    _ttsCurrentAudio=audio;
 
-  speechSynthesis.speak(utter);
+    audio.onended=function(){
+      stopTTS();
+      URL.revokeObjectURL(url);
+    };
+    audio.onerror=function(){
+      showToast('Audio playback failed');
+      stopTTS();
+      URL.revokeObjectURL(url);
+    };
+
+    audio.play().catch(function(err){
+      showToast('Playback failed: '+err.message);
+      stopTTS();
+      URL.revokeObjectURL(url);
+    });
+  })
+  .catch(function(err){
+    if(err.name==='AbortError') return; // user cancelled
+    showToast('TTS request failed: '+err.message);
+    // btnRef may already be cleared by stopTTS() above — only stop if still speaking
+    if(_ttsSpeaking) stopTTS();
+  });
 }
 
 function stopTTS(){
-  if('speechSynthesis' in window){
-    speechSynthesis.cancel();
+  // Abort any in-flight fetch
+  if(_ttsAbortController){
+    _ttsAbortController.abort();
+    _ttsAbortController=null;
+  }
+  // Stop audio playback
+  if(_ttsCurrentAudio){
+    _ttsCurrentAudio.pause();
+    _ttsCurrentAudio=null;
   }
   _ttsSpeaking=false;
-  _ttsCurrentUtterance=null;
   // Reset all speaking buttons
-  document.querySelectorAll('[data-speaking="1"]').forEach(btn=>{ btn.dataset.speaking='0'; });
+  document.querySelectorAll('[data-speaking="1"]').forEach(function(btn){ btn.dataset.speaking='0'; });
 }
 
 function autoReadLastAssistant(){
-  if(!('speechSynthesis' in window)) return;
   const pref=localStorage.getItem('hermes-tts-auto-read');
   if(pref!=='true') return;
   // Find the last assistant message segment in the DOM
@@ -3610,19 +3640,14 @@ function autoReadLastAssistant(){
   const clean=_stripForTTS(text);
   if(!clean) return;
 
-  const utter=new SpeechSynthesisUtterance(clean);
-  const savedVoice=localStorage.getItem('hermes-tts-voice');
-  const voices=speechSynthesis.getVoices();
-  if(savedVoice&&voices.length){
-    const match=voices.find(v=>v.name===savedVoice);
-    if(match) utter.voice=match;
-  }
-  const savedRate=parseFloat(localStorage.getItem('hermes-tts-rate'));
-  if(!isNaN(savedRate)) utter.rate=Math.min(2,Math.max(0.5,savedRate));
-  const savedPitch=parseFloat(localStorage.getItem('hermes-tts-pitch'));
-  if(!isNaN(savedPitch)) utter.pitch=Math.min(2,Math.max(0,savedPitch));
+  // If already playing, don't double-trigger
+  if(_ttsSpeaking) return;
 
-  speechSynthesis.speak(utter);
+  // Reuse speakMessage logic: find the TTS button in this segment and click it
+  const btn=last.querySelector('.msg-tts-btn');
+  if(btn){
+    speakMessage(btn);
+  }
 }
 
 // ── Reconnect banner (B4/B5: reload resilience) ──

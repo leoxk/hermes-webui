@@ -4,6 +4,7 @@ Extracted from server.py (Sprint 11) so server.py is a thin shell.
 """
 
 import html as _html
+import base64
 import copy
 import io
 import json
@@ -3000,6 +3001,44 @@ def _serve_shell_unavailable(handler, exc: Exception) -> bool:
     return True
 
 
+def _handle_tts(handler, body) -> bool:
+    """POST /api/tts — generate speech via Hermes Agent TTS and return audio."""
+    text = (body.get("text") or "").strip()
+    if not text:
+        return bad(handler, "text is required")
+
+    try:
+        from tools.tts_tool import text_to_speech_tool
+
+        result = json.loads(text_to_speech_tool(text=text))
+
+        if not result.get("success"):
+            return bad(handler, result.get("error", "TTS generation failed"), status=500)
+
+        file_path = result.get("file_path")
+        if not file_path or not os.path.exists(file_path):
+            return bad(handler, "TTS audio file not found", status=500)
+
+        with open(file_path, "rb") as f:
+            audio_data = f.read()
+
+        ext = os.path.splitext(file_path)[1].lower()
+        mime_map = {".mp3": "audio/mpeg", ".wav": "audio/wav", ".ogg": "audio/ogg", ".flac": "audio/flac"}
+        mime_type = mime_map.get(ext, "audio/mpeg")
+
+        return j(handler, {
+            "success": True,
+            "audio_base64": base64.b64encode(audio_data).decode("utf-8"),
+            "mime_type": mime_type,
+        })
+    except ImportError as e:
+        logger.error("TTS import error: %s", e, exc_info=True)
+        return bad(handler, f"TTS module not available: {e}", status=500)
+    except Exception as e:
+        logger.error("TTS error: %s", e, exc_info=True)
+        return bad(handler, str(e), status=500)
+
+
 def handle_get(handler, parsed) -> bool:
     """Handle all GET routes. Returns True if handled, False for 404."""
 
@@ -4076,6 +4115,9 @@ def handle_post(handler, parsed) -> bool:
         if diag:
             diag.finish()
         raise
+
+    if parsed.path == "/api/tts":
+        return _handle_tts(handler, body)
 
     if parsed.path == "/api/session/recovery/repair-safe":
         from api.session_recovery import repair_safe_session_recovery
