@@ -3539,7 +3539,7 @@ function _stripForTTS(text){
 }
 
 let _ttsSpeaking=false;
-let _ttsCurrentAudio=null;
+let _ttsCurrentSource=null;
 let _ttsAbortController=null;
 
 function speakMessage(btn){
@@ -3576,27 +3576,20 @@ function speakMessage(btn){
     if(!res.ok){
       return res.json().then(function(errData){ throw new Error(errData.error||'TTS request failed'); });
     }
-    return res.blob();
+    return res.arrayBuffer();
   })
-  .then(function(blob){
-    var url=URL.createObjectURL(blob);
-    var audio=new Audio(url);
-    _ttsCurrentAudio=audio;
-
-    audio.onended=function(){
+  .then(function(buffer){
+    var ac=new (window.AudioContext||window.webkitAudioContext)();
+    ac.decodeAudioData(buffer, function(audioBuffer){
+      var source=ac.createBufferSource();
+      source.buffer=audioBuffer;
+      source.connect(ac.destination);
+      source.start(0);
+      _ttsCurrentSource=source;
+      source.onended=function(){ stopTTS(); };
+    }, function(){
+      showToast('Audio decode failed');
       stopTTS();
-      URL.revokeObjectURL(url);
-    };
-    audio.onerror=function(){
-      showToast('Audio playback failed');
-      stopTTS();
-      URL.revokeObjectURL(url);
-    };
-
-    audio.play().catch(function(err){
-      showToast('Playback failed: '+err.message);
-      stopTTS();
-      URL.revokeObjectURL(url);
     });
   })
   .catch(function(err){
@@ -3613,10 +3606,10 @@ function stopTTS(){
     _ttsAbortController.abort();
     _ttsAbortController=null;
   }
-  // Stop audio playback
-  if(_ttsCurrentAudio){
-    _ttsCurrentAudio.pause();
-    _ttsCurrentAudio=null;
+  // Stop audio playback via Web Audio API
+  if(_ttsCurrentSource){
+    try{ _ttsCurrentSource.stop(); }catch(e){}
+    _ttsCurrentSource=null;
   }
   _ttsSpeaking=false;
   // Reset all speaking buttons
