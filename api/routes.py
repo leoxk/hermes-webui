@@ -4,7 +4,6 @@ Extracted from server.py (Sprint 11) so server.py is a thin shell.
 """
 
 import html as _html
-import base64
 import copy
 import io
 import json
@@ -3026,11 +3025,16 @@ def _handle_tts(handler, body) -> bool:
         mime_map = {".mp3": "audio/mpeg", ".wav": "audio/wav", ".ogg": "audio/ogg", ".flac": "audio/flac"}
         mime_type = mime_map.get(ext, "audio/mpeg")
 
-        return j(handler, {
-            "success": True,
-            "audio_base64": base64.b64encode(audio_data).decode("utf-8"),
-            "mime_type": mime_type,
-        })
+        # Stream audio binary directly — avoids base64 decode issues in browser
+        handler.send_response(200)
+        handler.send_header("Content-Type", mime_type)
+        handler.send_header("Content-Length", str(len(audio_data)))
+        handler.send_header("Cache-Control", "no-store")
+        from api.helpers import _security_headers
+        _security_headers(handler)
+        handler.end_headers()
+        handler.wfile.write(audio_data)
+        return True
     except ImportError as e:
         logger.error("TTS import error: %s", e, exc_info=True)
         return bad(handler, f"TTS module not available: {e}", status=500)

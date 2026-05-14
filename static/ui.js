@@ -3572,18 +3572,13 @@ function speakMessage(btn){
     body:JSON.stringify({text:clean}),
     signal:abortSignal,
   })
-  .then(function(res){ return res.json(); })
-  .then(function(data){
-    if(!data.success){
-      showToast(data.error||'TTS failed');
-      stopTTS();
-      return;
+  .then(function(res){
+    if(!res.ok){
+      return res.json().then(function(errData){ throw new Error(errData.error||'TTS request failed'); });
     }
-    // Decode base64 to binary
-    var binaryStr=atob(data.audio_base64);
-    var bytes=new Uint8Array(binaryStr.length);
-    for(var i=0;i<binaryStr.length;i++){ bytes[i]=binaryStr.charCodeAt(i); }
-    var blob=new Blob([bytes],{type:data.mime_type||'audio/mpeg'});
+    return res.blob();
+  })
+  .then(function(blob){
     var url=URL.createObjectURL(blob);
     var audio=new Audio(url);
     _ttsCurrentAudio=audio;
